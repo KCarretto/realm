@@ -50,8 +50,8 @@ fn methods(builder: &mut MethodsBuilder) {
     fn smb_exec(_this:  PivotLibrary, target: String, port: i32, username: String, password: String, hash: String, command: String) ->  String {
         smb_exec_impl::smb_exec(target, port, username, password, hash, command)
     }     // May want these too: PSRemoting, WMI, WinRM
-    fn port_scan(_this:  PivotLibrary, target_cidrs: Vec<String>, ports: Vec<i32>, portocol: String) ->  Vec<String> {
-        port_scan_impl::port_scan(target_cidrs, ports, portocol)
+    fn port_scan(_this:  PivotLibrary, target_cidrs: Vec<String>, ports: Vec<i32>, portocol: String, timeout: i32) ->  Vec<String> {
+        port_scan_impl::port_scan(target_cidrs, ports, portocol, timeout)
     }
     fn arp_scan(_this:  PivotLibrary, target_cidrs: Vec<String>) ->  Vec<String> {
         arp_scan_impl::arp_scan(target_cidrs)
