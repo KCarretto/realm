@@ -121,8 +121,17 @@ async fn tcp_connect_scan_socket(target_host: String, target_port: i32) -> Resul
     match TcpStream::connect(format!("{}:{}", target_host.clone(), target_port.clone())).await {
         Ok(_) => Ok(format!("{address},{port},{protocol},{status}", 
             address=target_host, port=target_port, protocol="tcp".to_string(), status="open".to_string())),
-        Err(_) => Ok(format!("{address},{port},{protocol},{status}", 
-        address=target_host, port=target_port, protocol="tcp".to_string(), status="closed".to_string())),
+        Err(err) => {
+            match err.to_string().as_str() {
+                "Connection refused (os error 111)" if  cfg!(target_os = "linux") => {
+                    return Ok(format!("{address},{port},{protocol},{status}", 
+                        address=target_host, port=target_port, protocol="tcp".to_string(), status="closed".to_string()));
+                },
+                // Need to add handler for windows and nix*
+                _ => return Err(anyhow::anyhow!("Unexpected result. {:?}", err)),
+
+            }
+        },
     }
 }
 
@@ -130,7 +139,7 @@ async fn udp_scan_socket(target_host: String, target_port: i32) -> Result<String
     // Let the OS set our bind port.
     let sock = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
     // Send bytes to remote host.
-    let _bytes_sent = sock.send_to("hello".as_bytes(), format!("{}:{}", target_host.clone(), target_port.clone())).await;
+    let _bytes_sent = sock.send_to("hello".as_bytes(), format!("{}:{}", target_host.clone(), target_port.clone())).await?;
 
     // Recieve any response from remote host.
     let mut response_buffer = [0; 1024];
@@ -148,11 +157,13 @@ async fn udp_scan_socket(target_host: String, target_port: i32) -> Result<String
         },
         Err(err) => {
             match String::from(format!("{}", err.to_string())).as_str() {
-                // If windows throws an error "forcibly closed" the firewall is bolcking 
+                // If windows throws an error "forcibly closed" the firewall is blocking. 
                 "An existing connection was forcibly closed by the remote host. (os error 10054)" if cfg!(target_os = "windows") => {
                     return Ok(format!("{address},{port},{protocol},{status}", 
                         address=target_host, port=target_port, protocol="udp".to_string(), status="closed".to_string()))
                 },
+                // There should be an error for nix* about the ICMP unreachable respnose.
+                // Seems like rust isn't capturing that packet though may need to explicitly listen for it.
                 _ => {
                     println!("{}",String::from(format!("{:?}", err.to_string() )).as_str());
                     return  Err(anyhow::anyhow!(format!("{}:{:?}", "Unexpected  error", err)))
@@ -193,8 +204,13 @@ async fn handle_port_scan(target_cidrs: Vec<String>, ports: Vec<i32>, protocol: 
 
             // Define our scan future.
             let scan_with_timeout = handle_scan(target.clone(), port.clone(), protocol.clone());
+ 
+            // TODO: Create "thread pool" to run multiple scans concurrently.
+            // Not await the variable assigned instead of the call.
+            // 
+
             // Execute that future with a timeout defined by the timeout argument.
-            // open for connected to port, closed for rejected, timeout for tokio timeout expiring.
+            // open for connected to port, closed for rejected, timeout for tokio timeout expirin
             match tokio::time::timeout(timeout, scan_with_timeout).await {
                 Ok(res) => result.push(res.unwrap()),
                 Err(_) => result.push(format!("{address},{port},{protocol},{status}", 
@@ -226,6 +242,13 @@ pub fn port_scan(target_cidrs: Vec<String>, ports: Vec<i32>, portocol: String, t
     }
 }
 
+ 
+// TCP
+// Windows default port state = DROP / timeout
+// nix* default port state = REJECT / closed
+// UDP
+// Windows default port state = REJECT / closed
+// nix* default port state = REJECT / closed
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,7 +382,7 @@ mod tests {
 
         // Setup a sender
         let send_task = task::spawn(
-            handle_port_scan(test_cidr, test_ports.clone(), String::from("tcp"), 1)
+            handle_port_scan(test_cidr, test_ports.clone(), String::from("tcp"), 5)
         );
 
         // Will this create a race condition where the sender sends before the listener starts?
@@ -405,7 +428,7 @@ mod tests {
 
         // Setup a sender
         let send_task = task::spawn(
-            handle_port_scan(test_cidr, test_ports.clone(), String::from("udp"), 1)
+            handle_port_scan(test_cidr, test_ports.clone(), String::from("udp"), 5)
         );
 
         // Will this create a race condition where the sender sends before the listener starts?
@@ -462,8 +485,27 @@ mod tests {
                 format!("{},{},{},closed", host, test_ports[3], proto)];
         }
 
-        let result = port_scan(test_cidr, test_ports, String::from("tcp"), 1)?;
+        let result = port_scan(test_cidr, test_ports, String::from("tcp"), 5)?;
         assert_eq!(result, expected_response);
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_portscan_manual() -> anyhow::Result<()> {
+        let test_ports =  vec![22, 65432];
+
+        let test_cidr =  vec!["192.168.119.132/32".to_string()];
+
+        // Setup a sender
+        let scan_res = handle_port_scan(test_cidr, test_ports.clone(), String::from("udp"), 15).await?;
+
+        println!("{:?}", scan_res);
+        Ok(())
+    }
 }
+
+
+
+// TODO: UDP/CLOSED not recieved when scanning form nix*
+//      - Linux: Just returns timedout not seeing the ICMP reject packet
+//      - MacOS: not tested yet.
